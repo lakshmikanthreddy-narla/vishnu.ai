@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Plus, Bot, MessageSquare, Zap, ArrowRight, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-
 interface AIApp {
   id: string;
   name: string;
@@ -15,72 +14,75 @@ interface AIApp {
   model: string;
   created_at: string;
 }
-
 interface UsageStats {
   totalApps: number;
   totalConversations: number;
   totalTokens: number;
 }
-
 const Dashboard = () => {
-  const { user } = useAuth();
-  const { toast } = useToast();
+  const {
+    user
+  } = useAuth();
+  const {
+    toast
+  } = useToast();
   const [apps, setApps] = useState<AIApp[]>([]);
-  const [stats, setStats] = useState<UsageStats>({ totalApps: 0, totalConversations: 0, totalTokens: 0 });
+  const [stats, setStats] = useState<UsageStats>({
+    totalApps: 0,
+    totalConversations: 0,
+    totalTokens: 0
+  });
   const [loading, setLoading] = useState(true);
-
   useEffect(() => {
     const fetchData = async () => {
       if (!user) return;
-
       try {
         // Fetch apps
-        const { data: appsData, error: appsError } = await supabase
-          .from('ai_apps')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(6);
-
+        const {
+          data: appsData,
+          error: appsError
+        } = await supabase.from('ai_apps').select('*').order('created_at', {
+          ascending: false
+        }).limit(6);
         if (appsError) throw appsError;
         setApps(appsData || []);
 
         // Fetch stats
-        const { count: appCount } = await supabase
-          .from('ai_apps')
-          .select('*', { count: 'exact', head: true });
-
-        const { count: convCount } = await supabase
-          .from('conversations')
-          .select('*', { count: 'exact', head: true });
-
-        const { data: usageData } = await supabase
-          .from('usage_logs')
-          .select('total_tokens');
-
+        const {
+          count: appCount
+        } = await supabase.from('ai_apps').select('*', {
+          count: 'exact',
+          head: true
+        });
+        const {
+          count: convCount
+        } = await supabase.from('conversations').select('*', {
+          count: 'exact',
+          head: true
+        });
+        const {
+          data: usageData
+        } = await supabase.from('usage_logs').select('total_tokens');
         const totalTokens = usageData?.reduce((acc, log) => acc + (log.total_tokens || 0), 0) || 0;
-
         setStats({
           totalApps: appCount || 0,
           totalConversations: convCount || 0,
-          totalTokens,
+          totalTokens
         });
       } catch (error: any) {
         toast({
           variant: 'destructive',
           title: 'Error loading data',
-          description: error.message,
+          description: error.message
         });
       } finally {
         setLoading(false);
       }
     };
-
     fetchData();
   }, [user, toast]);
-
-  return (
-    <DashboardLayout>
-      <div className="p-6 lg:p-8">
+  return <DashboardLayout>
+      <div className="p-6 lg:p-8 bg-warning-foreground">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
           <p className="text-muted-foreground mt-1">
@@ -136,12 +138,9 @@ const Dashboard = () => {
           </Button>
         </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
+        {loading ? <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : apps.length === 0 ? (
-          <Card className="border-dashed">
+          </div> : apps.length === 0 ? <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-12">
               <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
                 <Bot className="h-6 w-6 text-primary" />
@@ -157,11 +156,8 @@ const Dashboard = () => {
                 </Link>
               </Button>
             </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {apps.map((app) => (
-              <Card key={app.id} className="group hover:shadow-md transition-shadow">
+          </Card> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {apps.map(app => <Card key={app.id} className="group hover:shadow-md transition-shadow">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -185,13 +181,9 @@ const Dashboard = () => {
                     </Button>
                   </div>
                 </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
+              </Card>)}
+          </div>}
       </div>
-    </DashboardLayout>
-  );
+    </DashboardLayout>;
 };
-
 export default Dashboard;
