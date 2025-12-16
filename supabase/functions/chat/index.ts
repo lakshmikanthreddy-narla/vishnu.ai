@@ -12,18 +12,27 @@ serve(async (req) => {
   }
 
   try {
-    const openAIApiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!openAIApiKey) {
-      console.error("OPENAI_API_KEY not configured");
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    if (!LOVABLE_API_KEY) {
+      console.error("LOVABLE_API_KEY not configured");
       return new Response(
-        JSON.stringify({ error: "OpenAI API key not configured" }),
+        JSON.stringify({ error: "AI API key not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const { messages, model, systemPrompt, temperature, maxTokens } = await req.json();
 
-    console.log("Chat request:", { model, messageCount: messages.length });
+    // Map OpenAI models to Lovable AI equivalents
+    const modelMap: Record<string, string> = {
+      "gpt-4o": "openai/gpt-5",
+      "gpt-4o-mini": "google/gemini-2.5-flash",
+      "gpt-4-turbo": "openai/gpt-5",
+      "gpt-3.5-turbo": "google/gemini-2.5-flash-lite",
+    };
+
+    const lovableModel = modelMap[model] || "google/gemini-2.5-flash";
+    console.log("Chat request:", { originalModel: model, lovableModel, messageCount: messages.length });
 
     // Build messages array with system prompt
     const chatMessages = [
@@ -31,29 +40,34 @@ serve(async (req) => {
       ...messages,
     ];
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${openAIApiKey}`,
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: model || "gpt-4o-mini",
+        model: lovableModel,
         messages: chatMessages,
-        temperature: temperature ?? 0.7,
-        max_tokens: maxTokens ?? 2048,
         stream: true,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("OpenAI API error:", response.status, errorText);
+      console.error("Lovable AI error:", response.status, errorText);
       
       if (response.status === 429) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Please try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      
+      if (response.status === 402) {
+        return new Response(
+          JSON.stringify({ error: "Payment required. Please add credits to your workspace." }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
       
