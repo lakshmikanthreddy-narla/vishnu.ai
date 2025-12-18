@@ -99,6 +99,88 @@ export type Database = {
           },
         ]
       }
+      media_assets: {
+        Row: {
+          app_id: string | null
+          conversation_id: string | null
+          cost_estimate: number | null
+          created_at: string
+          file_path: string | null
+          file_url: string | null
+          id: string
+          metadata: Json | null
+          prompt: string | null
+          provider: string | null
+          source: Database["public"]["Enums"]["media_source"]
+          status: Database["public"]["Enums"]["media_status"]
+          team_id: string | null
+          tokens_used: number | null
+          type: Database["public"]["Enums"]["media_type"]
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          app_id?: string | null
+          conversation_id?: string | null
+          cost_estimate?: number | null
+          created_at?: string
+          file_path?: string | null
+          file_url?: string | null
+          id?: string
+          metadata?: Json | null
+          prompt?: string | null
+          provider?: string | null
+          source: Database["public"]["Enums"]["media_source"]
+          status?: Database["public"]["Enums"]["media_status"]
+          team_id?: string | null
+          tokens_used?: number | null
+          type: Database["public"]["Enums"]["media_type"]
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          app_id?: string | null
+          conversation_id?: string | null
+          cost_estimate?: number | null
+          created_at?: string
+          file_path?: string | null
+          file_url?: string | null
+          id?: string
+          metadata?: Json | null
+          prompt?: string | null
+          provider?: string | null
+          source?: Database["public"]["Enums"]["media_source"]
+          status?: Database["public"]["Enums"]["media_status"]
+          team_id?: string | null
+          tokens_used?: number | null
+          type?: Database["public"]["Enums"]["media_type"]
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "media_assets_app_id_fkey"
+            columns: ["app_id"]
+            isOneToOne: false
+            referencedRelation: "ai_apps"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "media_assets_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "media_assets_team_id_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           content: string
@@ -264,6 +346,53 @@ export type Database = {
           },
         ]
       }
+      video_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          media_asset_id: string
+          progress: number | null
+          provider_job_id: string | null
+          started_at: string | null
+          status: Database["public"]["Enums"]["media_status"]
+          updated_at: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          media_asset_id: string
+          progress?: number | null
+          provider_job_id?: string | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["media_status"]
+          updated_at?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          media_asset_id?: string
+          progress?: number | null
+          provider_job_id?: string | null
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["media_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "video_jobs_media_asset_id_fkey"
+            columns: ["media_asset_id"]
+            isOneToOne: false
+            referencedRelation: "media_assets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -272,7 +401,9 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      media_source: "generated" | "uploaded"
+      media_status: "pending" | "processing" | "completed" | "failed"
+      media_type: "image" | "video" | "upload"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -399,6 +530,10 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      media_source: ["generated", "uploaded"],
+      media_status: ["pending", "processing", "completed", "failed"],
+      media_type: ["image", "video", "upload"],
+    },
   },
 } as const
