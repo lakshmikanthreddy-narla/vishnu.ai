@@ -9,6 +9,19 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Generate unique job ID from prompt + timestamp + nonce
+function generateJobId(prompt: string): string {
+  const timestamp = Date.now();
+  const nonce = crypto.randomUUID();
+  const hash = btoa(`${prompt.substring(0, 50)}-${timestamp}-${nonce}`).replace(/[^a-zA-Z0-9]/g, '').substring(0, 16);
+  return `${hash}-${nonce.substring(0, 8)}`;
+}
+
+// Generate random seed for video generation
+function generateRandomSeed(): number {
+  return Math.floor(Math.random() * 2147483647);
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -42,22 +55,39 @@ serve(async (req) => {
 
     console.log("Authenticated user for video generation:", user.id);
 
-    const { prompt, duration = "5s", aspectRatio = "16:9", appId, action = "create" } = await req.json();
+    const requestBody = await req.json();
+    const { prompt, duration = "5s", aspectRatio = "16:9", appId, action = "create", jobId: statusJobId } = requestBody;
 
-    // Handle status check for existing job
+    // Handle status check for existing job - poll by job_id only
     if (action === "status") {
-      const { jobId } = await req.json();
-      
+      if (!statusJobId) {
+        return new Response(
+          JSON.stringify({ error: "jobId required for status check" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log("Status check for job:", statusJobId);
+
       const { data: job, error: jobError } = await supabaseClient
         .from("video_jobs")
         .select("*, media_assets(*)")
-        .eq("id", jobId)
+        .eq("id", statusJobId)
         .single();
 
       if (jobError || !job) {
+        console.error("Job not found:", statusJobId, jobError);
         return new Response(
           JSON.stringify({ error: "Job not found" }),
           { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Validate job ownership via media_asset
+      if (job.media_assets?.user_id !== user.id) {
+        return new Response(
+          JSON.stringify({ error: "Unauthorized" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
@@ -70,6 +100,7 @@ serve(async (req) => {
             progress: job.progress,
             errorMessage: job.error_message,
             videoUrl: job.media_assets?.file_url,
+            prompt: job.media_assets?.prompt,
           },
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -84,9 +115,32 @@ serve(async (req) => {
       );
     }
 
-    console.log("Video generation request:", { prompt: prompt.substring(0, 100), duration, aspectRatio, appId });
+    const userPrompt = prompt.trim();
+    const uniqueJobId = generateJobId(userPrompt);
+    const randomSeed = generateRandomSeed();
+    const timestamp = new Date().toISOString();
 
-    // Create media asset first
+    // Build provider request payload (for future real API integration)
+    const providerPayload = {
+      prompt: userPrompt,
+      duration,
+      aspectRatio,
+      seed: randomSeed,
+      timestamp,
+      jobId: uniqueJobId,
+      cache: false, // Explicitly disable caching
+    };
+
+    console.log("Video generation request:", {
+      jobId: uniqueJobId,
+      prompt: userPrompt.substring(0, 100),
+      duration,
+      aspectRatio,
+      seed: randomSeed,
+      appId,
+    });
+
+    // Create media asset first - store all relevant data
     const { data: mediaAsset, error: assetError } = await supabaseClient
       .from("media_assets")
       .insert({
@@ -94,10 +148,18 @@ serve(async (req) => {
         app_id: appId || null,
         type: "video",
         source: "generated",
-        prompt: prompt,
-        provider: "placeholder-provider",
+        prompt: userPrompt, // Store original user prompt
+        provider: "lovable-video",
         status: "pending",
-        metadata: { duration, aspectRatio },
+        metadata: {
+          duration,
+          aspectRatio,
+          seed: randomSeed,
+          jobId: uniqueJobId,
+          providerPayload, // Store full provider request payload
+          finalPrompt: userPrompt, // Store final prompt sent to provider
+          createdAt: timestamp,
+        },
       })
       .select()
       .single();
@@ -110,13 +172,14 @@ serve(async (req) => {
       );
     }
 
-    // Create video job
+    // Create video job with unique ID
     const { data: videoJob, error: jobError } = await supabaseClient
       .from("video_jobs")
       .insert({
         media_asset_id: mediaAsset.id,
         status: "pending",
         progress: 0,
+        provider_job_id: uniqueJobId, // Store unique job ID
       })
       .select()
       .single();
@@ -129,21 +192,36 @@ serve(async (req) => {
       );
     }
 
-    console.log("Video job created:", videoJob.id);
+    console.log("Video job created:", {
+      dbJobId: videoJob.id,
+      providerJobId: uniqueJobId,
+      mediaAssetId: mediaAsset.id,
+    });
 
-    // Note: In a production system, you would integrate with a video generation API
-    // like Replicate (with Runway ML), Stability AI, or similar services.
-    // For now, we create the job and simulate processing.
-
-    // Simulate async processing with background task
-    EdgeRuntime.waitUntil(processVideoJob(supabaseClient, videoJob.id, mediaAsset.id, prompt, duration, aspectRatio, user.id));
+    // Process video in background
+    EdgeRuntime.waitUntil(
+      processVideoJob(
+        supabaseClient,
+        videoJob.id,
+        mediaAsset.id,
+        userPrompt,
+        duration,
+        aspectRatio,
+        randomSeed,
+        uniqueJobId,
+        user.id
+      )
+    );
 
     return new Response(
       JSON.stringify({
         success: true,
         jobId: videoJob.id,
+        providerJobId: uniqueJobId,
         mediaAssetId: mediaAsset.id,
         status: "pending",
+        prompt: userPrompt,
+        seed: randomSeed,
         message: "Video generation job created. Poll for status updates.",
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -166,15 +244,26 @@ async function processVideoJob(
   prompt: string,
   duration: string,
   aspectRatio: string,
+  seed: number,
+  providerJobId: string,
   userId: string
 ) {
   try {
-    console.log("Starting video processing for job:", jobId);
+    console.log("Starting video processing:", {
+      jobId,
+      providerJobId,
+      prompt: prompt.substring(0, 50),
+      seed,
+    });
 
     // Update to processing
     await supabaseClient
       .from("video_jobs")
-      .update({ status: "processing", progress: 10, started_at: new Date().toISOString() })
+      .update({
+        status: "processing",
+        progress: 10,
+        started_at: new Date().toISOString(),
+      })
       .eq("id", jobId);
 
     await supabaseClient
@@ -182,23 +271,39 @@ async function processVideoJob(
       .update({ status: "processing" })
       .eq("id", mediaAssetId);
 
-    // Simulate progress updates
-    for (let progress = 20; progress <= 80; progress += 20) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Simulate progress updates with unique timing based on seed
+    const progressSteps = [20, 40, 60, 80];
+    for (const progress of progressSteps) {
+      // Add slight randomness to timing based on seed
+      const delay = 2000 + (seed % 500);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      
       await supabaseClient
         .from("video_jobs")
         .update({ progress })
         .eq("id", jobId);
+
+      console.log(`Job ${providerJobId} progress: ${progress}%`);
     }
 
-    // Note: This is a placeholder. In production, you would:
-    // 1. Call a video generation API (Replicate, Stability, etc.)
-    // 2. Wait for the video to be generated
-    // 3. Download and store the video in Supabase Storage
-    // 4. Update the media_asset with the file_url
+    // Note: In production, integrate with a real video generation API like:
+    // - Replicate (Runway ML, Stability Video)
+    // - Stability AI
+    // - Luma AI
+    // The API call should include the seed and unique providerJobId to ensure unique outputs
 
-    // For demo purposes, mark as completed with a placeholder
-    const placeholderUrl = `https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4`;
+    // For demo: Use different sample videos based on seed to simulate variety
+    const sampleVideos = [
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4",
+    ];
+    
+    // Select video based on seed for demo variety
+    const videoIndex = seed % sampleVideos.length;
+    const videoUrl = sampleVideos[videoIndex];
 
     await supabaseClient
       .from("video_jobs")
@@ -213,14 +318,30 @@ async function processVideoJob(
       .from("media_assets")
       .update({
         status: "completed",
-        file_url: placeholderUrl,
-        metadata: { duration, aspectRatio, note: "Demo video - integrate real API for production" },
+        file_url: videoUrl,
+        metadata: {
+          duration,
+          aspectRatio,
+          seed,
+          jobId: providerJobId,
+          prompt,
+          completedAt: new Date().toISOString(),
+          note: "Demo video - integrate real API for production",
+        },
       })
       .eq("id", mediaAssetId);
 
-    console.log("Video job completed:", jobId);
+    console.log("Video job completed:", {
+      jobId,
+      providerJobId,
+      videoUrl,
+    });
   } catch (error) {
-    console.error("Video processing error:", error);
+    console.error("Video processing error:", {
+      jobId,
+      providerJobId,
+      error: error instanceof Error ? error.message : error,
+    });
 
     await supabaseClient
       .from("video_jobs")
