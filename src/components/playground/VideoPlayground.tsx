@@ -4,19 +4,22 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { Loader2, Download, Video, Sparkles, Clock, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
+import { Loader2, Download, Video, Sparkles, Clock, CheckCircle2, XCircle, RefreshCw, Eye, Bug } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
+import { Switch } from '@/components/ui/switch';
 
 interface VideoJob {
   id: string;
+  providerJobId?: string;
   mediaAssetId: string;
   prompt: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
   videoUrl?: string;
   errorMessage?: string;
+  seed?: number;
   createdAt: Date;
 }
 
@@ -43,8 +46,10 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [isGenerating, setIsGenerating] = useState(false);
   const [videoJobs, setVideoJobs] = useState<VideoJob[]>([]);
+  const [showPreview, setShowPreview] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
 
-  // Poll for job status updates
+  // Poll for job status updates - poll by job_id only
   useEffect(() => {
     const pendingJobs = videoJobs.filter(
       (job) => job.status === 'pending' || job.status === 'processing'
@@ -55,13 +60,23 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
     const interval = setInterval(async () => {
       for (const job of pendingJobs) {
         try {
+          // Poll by specific job ID only - do not reuse previous results
           const { data, error } = await supabase
             .from('video_jobs')
             .select('*, media_assets(*)')
             .eq('id', job.id)
             .single();
 
-          if (error) continue;
+          if (error) {
+            console.error('Failed to poll job:', job.id, error);
+            continue;
+          }
+
+          // Validate that returned data matches current job_id
+          if (data.id !== job.id) {
+            console.warn('Job ID mismatch, skipping update');
+            continue;
+          }
 
           setVideoJobs((prev) =>
             prev.map((j) =>
@@ -80,7 +95,7 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
           if (data.status === 'completed') {
             toast({
               title: 'Video ready!',
-              description: 'Your video has been generated successfully.',
+              description: `Job ${job.id.substring(0, 8)} completed successfully.`,
             });
           } else if (data.status === 'failed') {
             toast({
@@ -116,6 +131,17 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
         throw new Error('Please log in to generate videos');
       }
 
+      // Send prompt directly to edge function - no hardcoded prompts
+      const requestPayload = {
+        prompt: prompt.trim(),
+        duration,
+        aspectRatio,
+        appId,
+        action: 'create',
+      };
+
+      console.log('Sending video generation request:', requestPayload);
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-video`,
         {
@@ -123,14 +149,9 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${session.access_token}`,
+            'Cache-Control': 'no-cache, no-store', // Disable caching
           },
-          body: JSON.stringify({
-            prompt: prompt.trim(),
-            duration,
-            aspectRatio,
-            appId,
-            action: 'create',
-          }),
+          body: JSON.stringify(requestPayload),
         }
       );
 
@@ -148,21 +169,28 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
       const data = await response.json();
 
       if (data.success) {
+        // Create new job with unique IDs - never reuse job IDs
         const newJob: VideoJob = {
           id: data.jobId,
+          providerJobId: data.providerJobId,
           mediaAssetId: data.mediaAssetId,
           prompt: prompt.trim(),
           status: 'pending',
           progress: 0,
+          seed: data.seed,
           createdAt: new Date(),
         };
 
+        // Add to list - each generation creates a new job
         setVideoJobs((prev) => [newJob, ...prev]);
         setPrompt('');
+        setShowPreview(false);
 
         toast({
           title: 'Video generation started',
-          description: 'This may take a few minutes. We\'ll notify you when it\'s ready.',
+          description: debugMode 
+            ? `Job ID: ${data.jobId.substring(0, 8)} | Seed: ${data.seed}`
+            : 'This may take a few minutes.',
         });
       } else {
         throw new Error('Failed to create video job');
@@ -187,7 +215,7 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `generated-${job.id}.mp4`;
+      a.download = `video-${job.id.substring(0, 8)}-${Date.now()}.mp4`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -231,6 +259,25 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
     <div className="flex flex-col h-full">
       {/* Controls */}
       <div className="p-4 border-b border-border bg-card space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bug className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Debug Mode</span>
+            <Switch checked={debugMode} onCheckedChange={setDebugMode} />
+          </div>
+          {prompt.trim() && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowPreview(!showPreview)}
+              className="text-xs"
+            >
+              <Eye className="h-3 w-3 mr-1" />
+              {showPreview ? 'Hide' : 'Show'} Preview
+            </Button>
+          )}
+        </div>
+
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -238,6 +285,14 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
           className="min-h-[80px] resize-none"
           disabled={isGenerating}
         />
+
+        {/* Prompt Preview */}
+        {showPreview && prompt.trim() && (
+          <div className="p-3 rounded-lg bg-muted/50 border border-border">
+            <p className="text-xs text-muted-foreground mb-1">Prompt Preview:</p>
+            <p className="text-sm">{prompt.trim()}</p>
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex-1 min-w-[130px]">
@@ -341,6 +396,15 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
                           <span className="text-primary">{job.progress}%</span>
                         )}
                       </div>
+
+                      {/* Debug Info */}
+                      {debugMode && (
+                        <div className="text-xs text-muted-foreground bg-muted/50 p-2 rounded mb-2 font-mono">
+                          <p>Job ID: {job.id}</p>
+                          {job.providerJobId && <p>Provider ID: {job.providerJobId}</p>}
+                          {job.seed && <p>Seed: {job.seed}</p>}
+                        </div>
+                      )}
 
                       {(job.status === 'pending' || job.status === 'processing') && (
                         <Progress value={job.progress} className="h-1.5" />
