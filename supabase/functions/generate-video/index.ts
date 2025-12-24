@@ -7,214 +7,97 @@ declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Helper to return JSON responses with CORS headers
-function jsonResponse(data: object, status = 200): Response {
-  return new Response(JSON.stringify(data), {
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-// Helper to return error responses
-function errorResponse(message: string, status = 500): Response {
-  console.error(`Error response (${status}):`, message);
+function errorResponse(message: string, status = 500, details?: unknown): Response {
+  console.error("generate-video error:", { status, message, details });
   return jsonResponse({ error: message }, status);
 }
 
-// Generate unique job ID
-function generateJobId(prompt: string): string {
+function generateProviderJobId(prompt: string): string {
+  // prompt + timestamp + random nonce
   const timestamp = Date.now();
   const nonce = crypto.randomUUID();
-  const hash = btoa(`${prompt.substring(0, 50)}-${timestamp}-${nonce}`)
+  const prefix = prompt.trim().slice(0, 24);
+  const hash = btoa(`${prefix}-${timestamp}-${nonce}`)
     .replace(/[^a-zA-Z0-9]/g, "")
-    .substring(0, 16);
-  return `${hash}-${nonce.substring(0, 8)}`;
+    .slice(0, 16);
+  return `${hash}-${timestamp}-${nonce.slice(0, 8)}`;
 }
 
-// Generate random seed for video generation
-function generateRandomSeed(): number {
+function randomSeed(): number {
   return Math.floor(Math.random() * 2147483647);
 }
 
 serve(async (req) => {
-  // Handle CORS preflight requests
+  // 2) Handle OPTIONS preflight explicitly
   if (req.method === "OPTIONS") {
-    console.log("Handling OPTIONS preflight request");
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
+  // 1) Wrap ALL logic in try/catch
   try {
-    console.log("Generate video request received");
+    if (req.method !== "POST") {
+      return errorResponse("Method not allowed", 405);
+    }
 
-    // Validate environment
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    const replicateApiKey = Deno.env.get("REPLICATE_API_KEY");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    const replicateApiKey = Deno.env.get("REPLICATE_API_KEY") ?? "";
 
+    // ENV validation
     if (!supabaseUrl || !supabaseAnonKey) {
-      console.error("Missing Supabase environment variables");
-      return errorResponse("Server configuration error", 500);
+      return errorResponse("Server misconfigured: missing backend keys", 500);
     }
-
     if (!replicateApiKey) {
-      console.error("Missing REPLICATE_API_KEY");
-      return errorResponse("Video generation service not configured", 500);
+      return errorResponse("Server misconfigured: missing REPLICATE_API_KEY", 500);
     }
 
-    // Verify authentication
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      console.error("Missing authorization header");
       return errorResponse("Authentication required", 401);
     }
 
-    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
 
-    const { data: userData, error: userError } = await supabaseClient.auth.getUser();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData?.user) {
-      console.error("Auth error:", userError?.message || "No user found");
-      return errorResponse("Invalid or expired session", 401);
+      return errorResponse("Invalid or expired session", 401, userError?.message);
     }
 
-    const user = userData.user;
-    console.log("Authenticated user:", user.id);
-
-    // Parse request body
-    let requestBody;
+    let body: any;
     try {
-      requestBody = await req.json();
-    } catch (parseError) {
-      console.error("Failed to parse request body:", parseError);
-      return errorResponse("Invalid request body", 400);
+      body = await req.json();
+    } catch (e) {
+      return errorResponse("Invalid JSON body", 400, e);
     }
 
-    const {
-      prompt,
-      duration = "5s",
-      aspectRatio = "16:9",
-      appId,
-      action = "create",
-      jobId: statusJobId,
-    } = requestBody;
+    const { action = "create" } = body;
 
-    console.log("Request params:", { action, prompt: prompt?.substring(0, 50), duration, aspectRatio, appId });
-
-    // Handle status check for existing job
+    // Status polling is done by job_id only (db id)
     if (action === "status") {
-      if (!statusJobId) {
-        return errorResponse("jobId required for status check", 400);
-      }
+      const jobId = body.jobId as string | undefined;
+      if (!jobId) return errorResponse("jobId required for status", 400);
 
-      console.log("Status check for job:", statusJobId);
-
-      const { data: job, error: jobError } = await supabaseClient
+      const { data: job, error: jobErr } = await supabase
         .from("video_jobs")
         .select("*, media_assets(*)")
-        .eq("id", statusJobId)
+        .eq("id", jobId)
         .maybeSingle();
 
-      if (jobError) {
-        console.error("Database error fetching job:", jobError);
-        return errorResponse("Failed to fetch job status", 500);
-      }
-
-      if (!job) {
-        return errorResponse("Job not found", 404);
-      }
-
-      // Validate job ownership
-      if (job.media_assets?.user_id !== user.id) {
-        return errorResponse("Unauthorized", 403);
-      }
-
-      // If job is processing, check Replicate status
-      if (job.status === "processing" && job.provider_job_id) {
-        try {
-          const replicate = new Replicate({ auth: replicateApiKey });
-          const prediction = await replicate.predictions.get(job.provider_job_id);
-          
-          if (prediction.status === "succeeded" && prediction.output) {
-            // Update database with completed video
-            const videoUrl = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
-            
-            await supabaseClient
-              .from("video_jobs")
-              .update({
-                status: "completed",
-                progress: 100,
-                completed_at: new Date().toISOString(),
-              })
-              .eq("id", statusJobId);
-
-            await supabaseClient
-              .from("media_assets")
-              .update({
-                status: "completed",
-                file_url: videoUrl,
-              })
-              .eq("id", job.media_asset_id);
-
-            return jsonResponse({
-              success: true,
-              job: {
-                id: job.id,
-                status: "completed",
-                progress: 100,
-                videoUrl: videoUrl,
-                prompt: job.media_assets?.prompt,
-              },
-            });
-          } else if (prediction.status === "failed") {
-            await supabaseClient
-              .from("video_jobs")
-              .update({
-                status: "failed",
-                error_message: prediction.error || "Video generation failed",
-              })
-              .eq("id", statusJobId);
-
-            await supabaseClient
-              .from("media_assets")
-              .update({ status: "failed" })
-              .eq("id", job.media_asset_id);
-
-            return jsonResponse({
-              success: true,
-              job: {
-                id: job.id,
-                status: "failed",
-                errorMessage: prediction.error || "Video generation failed",
-              },
-            });
-          } else {
-            // Still processing - estimate progress
-            const progressMap: Record<string, number> = {
-              starting: 10,
-              processing: 50,
-            };
-            const progress = progressMap[prediction.status] || job.progress || 30;
-
-            return jsonResponse({
-              success: true,
-              job: {
-                id: job.id,
-                status: "processing",
-                progress,
-                prompt: job.media_assets?.prompt,
-              },
-            });
-          }
-        } catch (replicateError) {
-          console.error("Replicate status check error:", replicateError);
-          // Return cached status on error
-        }
-      }
+      if (jobErr) return errorResponse("Failed to load job", 500, jobErr);
+      if (!job) return errorResponse("Job not found", 404);
 
       return jsonResponse({
         success: true,
@@ -225,139 +108,268 @@ serve(async (req) => {
           errorMessage: job.error_message,
           videoUrl: job.media_assets?.file_url,
           prompt: job.media_assets?.prompt,
+          providerJobId: job.provider_job_id,
         },
       });
     }
 
-    // Create new video job
-    if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
-      return errorResponse("Prompt is required", 400);
-    }
+    // Create a new job
+    const prompt = (body.prompt as string | undefined)?.trim();
+    const duration = (body.duration as string | undefined) ?? "5s";
+    const aspectRatio = (body.aspectRatio as string | undefined) ?? "16:9";
+    const appId = (body.appId as string | undefined) ?? null;
 
-    const userPrompt = prompt.trim();
-    const uniqueJobId = generateJobId(userPrompt);
-    const randomSeed = generateRandomSeed();
-    const timestamp = new Date().toISOString();
+    if (!prompt) return errorResponse("Prompt is required", 400);
 
-    // Map aspect ratio to Replicate format
-    const aspectRatioMap: Record<string, string> = {
-      "16:9": "16:9",
-      "9:16": "9:16",
-      "1:1": "1:1",
-    };
-    const replicateAspectRatio = aspectRatioMap[aspectRatio] || "16:9";
+    const providerJobId = generateProviderJobId(prompt);
+    const seed = randomSeed();
+    const createdAt = new Date().toISOString();
 
-    console.log("Creating video job:", {
-      jobId: uniqueJobId,
-      prompt: userPrompt.substring(0, 100),
+    // Store per-job: original prompt, final prompt, provider payload, job_id
+    const providerRequestPayload = {
+      prompt,
+      // Model-specific inputs can be adjusted later; keep explicit and unique
+      seed,
+      aspect_ratio: aspectRatio,
       duration,
-      aspectRatio: replicateAspectRatio,
-      seed: randomSeed,
+      cache: false,
+      nonce: providerJobId,
+      created_at: createdAt,
+    };
+
+    console.log("Queueing video job", {
+      providerJobId,
+      promptPreview: prompt.slice(0, 120),
+      providerRequestPayload,
     });
 
-    // Create media asset first
-    const { data: mediaAsset, error: assetError } = await supabaseClient
+    const { data: mediaAsset, error: assetError } = await supabase
       .from("media_assets")
       .insert({
-        user_id: user.id,
-        app_id: appId || null,
+        user_id: userData.user.id,
+        app_id: appId,
         type: "video",
         source: "generated",
-        prompt: userPrompt,
+        status: "pending", // QUEUED
         provider: "replicate",
-        status: "pending",
+        prompt, // original user prompt
         metadata: {
+          job_id: providerJobId,
+          original_user_prompt: prompt,
+          final_prompt_sent_to_provider: prompt,
+          provider_request_payload: providerRequestPayload,
+          seed,
           duration,
-          aspectRatio: replicateAspectRatio,
-          seed: randomSeed,
-          jobId: uniqueJobId,
-          createdAt: timestamp,
+          aspectRatio,
+          created_at: createdAt,
         },
       })
       .select()
       .single();
 
-    if (assetError) {
-      console.error("Failed to create media asset:", assetError);
-      return errorResponse("Failed to create video job: " + assetError.message, 500);
+    if (assetError || !mediaAsset) {
+      return errorResponse("Failed to create media asset", 500, assetError);
     }
 
-    console.log("Media asset created:", mediaAsset.id);
-
-    // Start Replicate prediction
-    const replicate = new Replicate({ auth: replicateApiKey });
-
-    let prediction;
-    try {
-      // Use MiniMax video-01 model for video generation
-      prediction = await replicate.predictions.create({
-        model: "minimax/video-01",
-        input: {
-          prompt: userPrompt,
-          prompt_optimizer: true,
-        },
-      });
-
-      console.log("Replicate prediction created:", prediction.id);
-    } catch (replicateError) {
-      console.error("Replicate API error:", replicateError);
-      // Clean up media asset
-      await supabaseClient.from("media_assets").delete().eq("id", mediaAsset.id);
-      return errorResponse(
-        "Failed to start video generation: " + (replicateError instanceof Error ? replicateError.message : "API error"),
-        500
-      );
-    }
-
-    // Create video job with Replicate prediction ID
-    const { data: videoJob, error: jobError } = await supabaseClient
+    const { data: videoJob, error: jobError } = await supabase
       .from("video_jobs")
       .insert({
         media_asset_id: mediaAsset.id,
-        status: "processing",
-        progress: 10,
-        provider_job_id: prediction.id,
-        started_at: new Date().toISOString(),
+        status: "pending", // QUEUED
+        progress: 0,
+        provider_job_id: providerJobId,
       })
       .select()
       .single();
 
-    if (jobError) {
-      console.error("Failed to create video job:", jobError);
-      // Clean up media asset
-      await supabaseClient.from("media_assets").delete().eq("id", mediaAsset.id);
-      return errorResponse("Failed to create video job: " + jobError.message, 500);
+    if (jobError || !videoJob) {
+      // Cleanup media asset to avoid orphan
+      await supabase.from("media_assets").delete().eq("id", mediaAsset.id);
+      return errorResponse("Failed to create video job", 500, jobError);
     }
 
-    // Update media asset status
-    await supabaseClient
-      .from("media_assets")
-      .update({ status: "processing" })
-      .eq("id", mediaAsset.id);
+    // 4) NEVER wait for video generation to complete
+    // Trigger provider request asynchronously
+    EdgeRuntime.waitUntil(
+      startProviderGeneration({
+        supabaseUrl,
+        supabaseAnonKey,
+        authHeader,
+        replicateApiKey,
+        dbJobId: videoJob.id,
+        mediaAssetId: mediaAsset.id,
+        providerJobId,
+        prompt,
+        providerRequestPayload,
+      })
+    );
 
-    console.log("Video job created:", {
-      dbJobId: videoJob.id,
-      replicatePredictionId: prediction.id,
-      mediaAssetId: mediaAsset.id,
-    });
-
-    // Return immediately - frontend will poll for status
+    // 5) Immediately return JSON with job_id and status
     return jsonResponse({
       success: true,
       jobId: videoJob.id,
-      providerJobId: prediction.id,
+      status: "queued",
+      providerJobId,
       mediaAssetId: mediaAsset.id,
-      status: "processing",
-      prompt: userPrompt,
-      seed: randomSeed,
-      message: "Video generation started. Poll for status updates.",
     });
-  } catch (error) {
-    console.error("Unhandled error in generate-video:", error);
-    console.error("Stack:", error instanceof Error ? error.stack : "N/A");
-    return errorResponse(
-      error instanceof Error ? error.message : "An unexpected error occurred",
-      500
-    );
+  } catch (e) {
+    return errorResponse("Unhandled server error", 500, e);
   }
 });
+
+async function startProviderGeneration(args: {
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  authHeader: string;
+  replicateApiKey: string;
+  dbJobId: string;
+  mediaAssetId: string;
+  providerJobId: string;
+  prompt: string;
+  providerRequestPayload: any;
+}) {
+  const {
+    supabaseUrl,
+    supabaseAnonKey,
+    authHeader,
+    replicateApiKey,
+    dbJobId,
+    mediaAssetId,
+    providerJobId,
+    prompt,
+    providerRequestPayload,
+  } = args;
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
+  // Always catch errors in background flow
+  try {
+    console.log("Starting provider generation", { dbJobId, providerJobId });
+
+    await supabase
+      .from("video_jobs")
+      .update({ status: "processing", progress: 5, started_at: new Date().toISOString() })
+      .eq("id", dbJobId);
+
+    await supabase.from("media_assets").update({ status: "processing" }).eq("id", mediaAssetId);
+
+    // Provider call validation
+    const endpoint = "https://api.replicate.com/v1/predictions";
+    console.log("Provider endpoint:", endpoint);
+
+    const replicate = new Replicate({ auth: replicateApiKey });
+
+    // Log request payload (excluding secrets)
+    console.log("Replicate request payload:", {
+      model: "minimax/video-01",
+      input: providerRequestPayload,
+    });
+
+    let prediction: any;
+    try {
+      prediction = await replicate.predictions.create({
+        model: "minimax/video-01",
+        input: {
+          prompt,
+          // Ensure request differs for every prompt/job
+          seed: providerRequestPayload.seed,
+          // Some models ignore these; keep them for uniqueness and future compatibility
+          aspect_ratio: providerRequestPayload.aspect_ratio,
+          cache: false,
+        },
+      });
+
+      console.log("Replicate create response:", {
+        id: prediction?.id,
+        status: prediction?.status,
+      });
+    } catch (e) {
+      console.error("Replicate create failed:", e);
+      await supabase
+        .from("video_jobs")
+        .update({ status: "failed", error_message: e instanceof Error ? e.message : "Provider error" })
+        .eq("id", dbJobId);
+      await supabase.from("media_assets").update({ status: "failed" }).eq("id", mediaAssetId);
+      return;
+    }
+
+    // Store provider response id
+    await supabase
+      .from("media_assets")
+      .update({
+        metadata: {
+          ...(providerRequestPayload ? { provider_request_payload: providerRequestPayload } : {}),
+          provider_prediction_id: prediction.id,
+          provider_job_id: providerJobId,
+        },
+      })
+      .eq("id", mediaAssetId);
+
+    // Poll provider until completion in background (does not block HTTP response)
+    const started = Date.now();
+    const timeoutMs = 10 * 60 * 1000;
+
+    while (Date.now() - started < timeoutMs) {
+      const p = await replicate.predictions.get(prediction.id);
+      console.log("Replicate status:", { id: prediction.id, status: p.status });
+
+      if (p.status === "succeeded") {
+        const videoUrl = Array.isArray(p.output) ? p.output[0] : p.output;
+
+        await supabase
+          .from("video_jobs")
+          .update({ status: "completed", progress: 100, completed_at: new Date().toISOString() })
+          .eq("id", dbJobId);
+
+        await supabase
+          .from("media_assets")
+          .update({ status: "completed", file_url: videoUrl })
+          .eq("id", mediaAssetId);
+
+        console.log("Video job completed", { dbJobId, providerJobId, videoUrl });
+        return;
+      }
+
+      if (p.status === "failed" || p.status === "canceled") {
+        const msg = p.error || `Provider ${p.status}`;
+        await supabase
+          .from("video_jobs")
+          .update({ status: "failed", error_message: msg })
+          .eq("id", dbJobId);
+        await supabase.from("media_assets").update({ status: "failed" }).eq("id", mediaAssetId);
+
+        console.log("Video job failed", { dbJobId, providerJobId, msg });
+        return;
+      }
+
+      // update rough progress
+      await supabase
+        .from("video_jobs")
+        .update({ progress: 10 + Math.min(80, Math.floor((Date.now() - started) / 3000) * 5) })
+        .eq("id", dbJobId);
+
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+
+    await supabase
+      .from("video_jobs")
+      .update({ status: "failed", error_message: "Provider timed out" })
+      .eq("id", dbJobId);
+    await supabase.from("media_assets").update({ status: "failed" }).eq("id", mediaAssetId);
+
+    console.log("Video job timed out", { dbJobId, providerJobId });
+  } catch (e) {
+    console.error("Background processing crashed:", e);
+    try {
+      await supabase
+        .from("video_jobs")
+        .update({ status: "failed", error_message: e instanceof Error ? e.message : "Unknown error" })
+        .eq("id", dbJobId);
+      await supabase.from("media_assets").update({ status: "failed" }).eq("id", mediaAssetId);
+    } catch (e2) {
+      console.error("Failed to mark job failed:", e2);
+    }
+  }
+}
