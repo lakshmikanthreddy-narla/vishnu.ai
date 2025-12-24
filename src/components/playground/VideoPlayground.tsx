@@ -149,7 +149,6 @@ export function VideoPlayground({ appId }: VideoPlaygroundProps) {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${session.access_token}`,
-            'Cache-Control': 'no-cache, no-store', // Disable caching
           },
           body: JSON.stringify(requestPayload),
         }
