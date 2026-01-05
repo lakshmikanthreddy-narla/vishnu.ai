@@ -39,7 +39,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const signUp = async (email: string, password: string, fullName?: string) => {
     const redirectUrl = `${window.location.origin}/`;
-    const { error } = await supabase.auth.signUp({
+    console.log('[Auth] signUp attempt:', { email, redirectUrl });
+    
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -47,11 +49,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         data: { full_name: fullName || '' }
       }
     });
+    
+    console.log('[Auth] signUp response:', { 
+      userId: data?.user?.id, 
+      session: !!data?.session,
+      error: error?.message 
+    });
+    
     return { error: error as Error | null };
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    console.log('[Auth] signIn attempt:', { email });
+    
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    
+    console.log('[Auth] signIn response:', { 
+      userId: data?.user?.id, 
+      session: !!data?.session,
+      error: error?.message,
+      errorStatus: error?.status
+    });
+    
+    // If login succeeded, verify session
+    if (!error && data?.session) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      console.log('[Auth] session verification:', { 
+        hasSession: !!sessionData?.session,
+        accessToken: sessionData?.session?.access_token?.substring(0, 20) + '...'
+      });
+    }
+    
     return { error: error as Error | null };
   };
 
