@@ -7,6 +7,94 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Prompt validation constants
+const MAX_PROMPT_LENGTH = 10000;
+const MAX_MESSAGE_COUNT = 50;
+
+// Suspicious patterns that may indicate prompt injection attempts
+const SUSPICIOUS_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)/i,
+  /disregard\s+(all\s+)?(previous|prior|above)/i,
+  /forget\s+(everything|all|your)\s+(instructions?|rules?|training)/i,
+  /you\s+are\s+now\s+(a|an)\s+/i,
+  /new\s+instructions?:\s*/i,
+  /system\s*:\s*/i,
+  /\[SYSTEM\]/i,
+  /\{\{.*\}\}/,
+  /<\s*script\s*>/i,
+];
+
+// Validate and sanitize a single message
+function validateMessage(message: { role: string; content: string }): { valid: boolean; error?: string; sanitized?: { role: string; content: string } } {
+  if (!message || typeof message !== "object") {
+    return { valid: false, error: "Invalid message format" };
+  }
+
+  const { role, content } = message;
+
+  // Validate role
+  if (!["user", "assistant", "system"].includes(role)) {
+    return { valid: false, error: `Invalid message role: ${role}` };
+  }
+
+  // Validate content type
+  if (typeof content !== "string") {
+    return { valid: false, error: "Message content must be a string" };
+  }
+
+  // Validate content length
+  if (content.length > MAX_PROMPT_LENGTH) {
+    return { valid: false, error: `Message exceeds maximum length of ${MAX_PROMPT_LENGTH} characters` };
+  }
+
+  // Check for suspicious patterns in user messages
+  if (role === "user") {
+    for (const pattern of SUSPICIOUS_PATTERNS) {
+      if (pattern.test(content)) {
+        console.warn("Suspicious prompt pattern detected:", pattern.toString());
+        // Log but don't block - monitor for abuse patterns
+      }
+    }
+  }
+
+  // Sanitize content - remove null bytes and control characters (except newlines/tabs)
+  const sanitizedContent = content
+    .replace(/\x00/g, "")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+  return {
+    valid: true,
+    sanitized: { role, content: sanitizedContent },
+  };
+}
+
+// Validate messages array
+function validateMessages(messages: unknown[]): { valid: boolean; error?: string; sanitized?: { role: string; content: string }[] } {
+  if (!Array.isArray(messages)) {
+    return { valid: false, error: "Messages must be an array" };
+  }
+
+  if (messages.length === 0) {
+    return { valid: false, error: "Messages array cannot be empty" };
+  }
+
+  if (messages.length > MAX_MESSAGE_COUNT) {
+    return { valid: false, error: `Too many messages. Maximum is ${MAX_MESSAGE_COUNT}` };
+  }
+
+  const sanitizedMessages: { role: string; content: string }[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const result = validateMessage(messages[i] as { role: string; content: string });
+    if (!result.valid) {
+      return { valid: false, error: `Message ${i + 1}: ${result.error}` };
+    }
+    sanitizedMessages.push(result.sanitized!);
+  }
+
+  return { valid: true, sanitized: sanitizedMessages };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -51,6 +139,34 @@ serve(async (req) => {
 
     const { messages, model, systemPrompt, temperature, maxTokens } = await req.json();
 
+    // Validate and sanitize messages
+    const messagesValidation = validateMessages(messages);
+    if (!messagesValidation.valid) {
+      console.warn("Message validation failed:", messagesValidation.error);
+      return new Response(
+        JSON.stringify({ error: messagesValidation.error }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const sanitizedMessages = messagesValidation.sanitized!;
+
+    // Validate system prompt if provided
+    if (systemPrompt !== undefined && systemPrompt !== null) {
+      if (typeof systemPrompt !== "string") {
+        return new Response(
+          JSON.stringify({ error: "System prompt must be a string" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      if (systemPrompt.length > MAX_PROMPT_LENGTH) {
+        return new Response(
+          JSON.stringify({ error: `System prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} characters` }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     // Map OpenAI models to Lovable AI equivalents
     const modelMap: Record<string, string> = {
       "gpt-4o": "openai/gpt-5",
@@ -62,10 +178,10 @@ serve(async (req) => {
     const lovableModel = modelMap[model] || "google/gemini-2.5-flash";
     console.log("Chat request:", { originalModel: model, lovableModel, messageCount: messages.length });
 
-    // Build messages array with system prompt
+    // Build messages array with system prompt (use sanitized messages)
     const chatMessages = [
       { role: "system", content: systemPrompt || "You are a helpful AI assistant." },
-      ...messages,
+      ...sanitizedMessages,
     ];
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {

@@ -6,6 +6,55 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Prompt validation constants
+const MAX_PROMPT_LENGTH = 2000;
+const VALID_SIZES = ["256x256", "512x512", "1024x1024", "1792x1024", "1024x1792"];
+const VALID_STYLES = ["vivid", "natural", "photorealistic", "artistic", "anime", "3d-render"];
+
+// Validate and sanitize image generation prompt
+function validateImagePrompt(prompt: unknown): { valid: boolean; error?: string; sanitized?: string } {
+  if (prompt === undefined || prompt === null) {
+    return { valid: false, error: "Prompt is required" };
+  }
+
+  if (typeof prompt !== "string") {
+    return { valid: false, error: "Prompt must be a string" };
+  }
+
+  const trimmed = prompt.trim();
+  
+  if (trimmed.length === 0) {
+    return { valid: false, error: "Prompt cannot be empty" };
+  }
+
+  if (trimmed.length > MAX_PROMPT_LENGTH) {
+    return { valid: false, error: `Prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} characters` };
+  }
+
+  // Remove null bytes and control characters
+  const sanitized = trimmed
+    .replace(/\x00/g, "")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
+  return { valid: true, sanitized };
+}
+
+// Validate size parameter
+function validateSize(size: unknown): string {
+  if (!size || typeof size !== "string") {
+    return "1024x1024";
+  }
+  return VALID_SIZES.includes(size) ? size : "1024x1024";
+}
+
+// Validate style parameter
+function validateStyle(style: unknown): string | undefined {
+  if (!style || typeof style !== "string") {
+    return undefined;
+  }
+  return VALID_STYLES.includes(style.toLowerCase()) ? style : undefined;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -48,19 +97,36 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, size = "1024x1024", style, appId } = await req.json();
+    const { prompt, size, style, appId } = await req.json();
 
-    if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+    // Validate and sanitize prompt
+    const promptValidation = validateImagePrompt(prompt);
+    if (!promptValidation.valid) {
+      console.warn("Prompt validation failed:", promptValidation.error);
       return new Response(
-        JSON.stringify({ error: "Prompt is required" }),
+        JSON.stringify({ error: promptValidation.error }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("Image generation request:", { prompt: prompt.substring(0, 100), size, style, appId });
+    const sanitizedPrompt = promptValidation.sanitized!;
+    
+    // Validate size and style parameters
+    const validatedSize = validateSize(size);
+    const validatedStyle = validateStyle(style);
 
-    // Build enhanced prompt with style if provided
-    const enhancedPrompt = style ? `${prompt}. Style: ${style}` : prompt;
+    // Validate appId if provided
+    const validatedAppId = appId && typeof appId === "string" && appId.length <= 100 ? appId : null;
+
+    console.log("Image generation request:", { 
+      promptLength: sanitizedPrompt.length, 
+      size: validatedSize, 
+      style: validatedStyle, 
+      appId: validatedAppId 
+    });
+
+    // Build enhanced prompt with validated style
+    const enhancedPrompt = validatedStyle ? `${sanitizedPrompt}. Style: ${validatedStyle}` : sanitizedPrompt;
 
     // Use Lovable AI Gateway with image generation model
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -164,20 +230,20 @@ serve(async (req) => {
 
     const storedUrl = uploadError ? imageUrl : urlData.publicUrl;
 
-    // Save to media_assets
+    // Save to media_assets (use validated/sanitized values)
     const { data: mediaAsset, error: insertError } = await supabaseClient
       .from("media_assets")
       .insert({
         user_id: user.id,
-        app_id: appId || null,
+        app_id: validatedAppId,
         type: "image",
         source: "generated",
-        prompt: prompt,
+        prompt: sanitizedPrompt,
         file_url: storedUrl,
         file_path: uploadError ? null : fileName,
         provider: "lovable-ai",
         status: "completed",
-        metadata: { size, style, textContent },
+        metadata: { size: validatedSize, style: validatedStyle, textContent },
       })
       .select()
       .single();
