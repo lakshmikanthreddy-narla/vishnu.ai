@@ -43,6 +43,19 @@ export function FileUploader({
     setIsDragging(false);
   }, []);
 
+  const getSignedUrl = async (path: string): Promise<string> => {
+    const { data, error } = await supabase.functions.invoke('get-signed-url', {
+      body: { bucket: 'user-uploads', path },
+    });
+
+    if (error || !data?.signedUrl) {
+      console.error('Failed to get signed URL:', error);
+      throw new Error('Failed to get file URL');
+    }
+
+    return data.signedUrl;
+  };
+
   const uploadFile = async (file: File): Promise<UploadedFile | null> => {
     if (!user) return null;
 
@@ -61,9 +74,8 @@ export function FileUploader({
       throw new Error(`Failed to upload ${file.name}`);
     }
 
-    const { data: urlData } = supabase.storage
-      .from('user-uploads')
-      .getPublicUrl(fileName);
+    // Get signed URL instead of public URL
+    const signedUrl = await getSignedUrl(fileName);
 
     // Also save to media_assets
     const { data: mediaAsset, error: dbError } = await supabase
@@ -72,7 +84,7 @@ export function FileUploader({
         user_id: user.id,
         type: 'upload',
         source: 'uploaded',
-        file_url: urlData.publicUrl,
+        file_url: null, // Don't store public URL
         file_path: fileName,
         status: 'completed',
         metadata: { originalName: file.name, size: file.size, type: file.type },
@@ -87,7 +99,7 @@ export function FileUploader({
     return {
       id: mediaAsset?.id || crypto.randomUUID(),
       name: file.name,
-      url: urlData.publicUrl,
+      url: signedUrl,
       path: fileName,
     };
   };
