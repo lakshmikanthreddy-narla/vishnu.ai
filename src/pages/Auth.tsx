@@ -1,14 +1,20 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
+import { useMFA } from '@/hooks/useMFA';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Bot, Loader2, ArrowLeft } from 'lucide-react';
+import { MFAVerification } from '@/components/auth/MFAVerification';
 
-type AuthMode = 'login' | 'register' | 'forgot-password';
+type AuthMode = 'login' | 'register' | 'forgot-password' | 'mfa-verify';
+
+interface MFAState {
+  factorId: string;
+}
 
 const Auth = () => {
   const [searchParams] = useSearchParams();
@@ -18,16 +24,37 @@ const Auth = () => {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [mfaState, setMfaState] = useState<MFAState | null>(null);
 
   const { signIn, signUp, resetPassword, user, loading } = useAuth();
+  const { getAuthenticatorAssuranceLevel, getMFAFactors } = useMFA();
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
-    if (!loading && user) {
-      navigate('/dashboard');
+    if (!loading && user && mode !== 'mfa-verify') {
+      // Check if user needs to complete MFA
+      const checkMFAStatus = async () => {
+        const { currentLevel, nextLevel } = await getAuthenticatorAssuranceLevel();
+        
+        if (currentLevel === 'aal1' && nextLevel === 'aal2') {
+          // User has MFA enabled but hasn't completed it
+          const factors = await getMFAFactors();
+          const verifiedFactor = factors.find(f => f.status === 'verified');
+          
+          if (verifiedFactor) {
+            setMfaState({ factorId: verifiedFactor.id });
+            setMode('mfa-verify');
+            return;
+          }
+        }
+        
+        navigate('/dashboard');
+      };
+      
+      checkMFAStatus();
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, navigate, mode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,9 +69,8 @@ const Auth = () => {
             title: 'Sign in failed',
             description: error.message,
           });
-        } else {
-          navigate('/dashboard');
         }
+        // Navigation handled by useEffect after checking MFA
       } else if (mode === 'register') {
         const { error } = await signUp(email, password, fullName);
         if (error) {
@@ -89,10 +115,35 @@ const Auth = () => {
     }
   };
 
+  const handleMFASuccess = () => {
+    setMfaState(null);
+    navigate('/dashboard');
+  };
+
+  const handleMFACancel = async () => {
+    // Sign out the user if they cancel MFA
+    const { signOut } = await import('@/hooks/useAuth').then(m => ({ signOut: m.useAuth }));
+    setMfaState(null);
+    setMode('login');
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Show MFA verification screen
+  if (mode === 'mfa-verify' && mfaState) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle p-4">
+        <MFAVerification
+          factorId={mfaState.factorId}
+          onSuccess={handleMFASuccess}
+          onCancel={handleMFACancel}
+        />
       </div>
     );
   }

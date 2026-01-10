@@ -9,6 +9,7 @@ import Dashboard from "./pages/Dashboard";
 import NewApp from "./pages/NewApp";
 import AppSettings from "./pages/AppSettings";
 import Playground from "./pages/Playground";
+import SecuritySettings from "./pages/SecuritySettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/apps/new" element={<NewApp />} />
             <Route path="/apps/:id/settings" element={<AppSettings />} />
             <Route path="/apps/:id/playground" element={<Playground />} />
+            <Route path="/settings/security" element={<SecuritySettings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
