@@ -9,8 +9,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/hooks/use-toast';
 import { Bot, Loader2, ArrowLeft } from 'lucide-react';
 import { MFAVerification } from '@/components/auth/MFAVerification';
+import { OTPVerification } from '@/components/auth/OTPVerification';
 
-type AuthMode = 'login' | 'register' | 'forgot-password' | 'mfa-verify';
+type AuthMode = 'login' | 'register' | 'forgot-password' | 'verify-otp' | 'mfa-verify';
 
 interface MFAState {
   factorId: string;
@@ -25,6 +26,7 @@ const Auth = () => {
   const [fullName, setFullName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [mfaState, setMfaState] = useState<MFAState | null>(null);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
 
   const { signIn, signUp, resetPassword, user, loading } = useAuth();
   const { getAuthenticatorAssuranceLevel, getMFAFactors } = useMFA();
@@ -32,7 +34,7 @@ const Auth = () => {
   const { toast } = useToast();
 
   useEffect(() => {
-    if (!loading && user && mode !== 'mfa-verify') {
+    if (!loading && user && mode !== 'mfa-verify' && mode !== 'verify-otp') {
       // Check if user needs to complete MFA
       const checkMFAStatus = async () => {
         const { currentLevel, nextLevel } = await getAuthenticatorAssuranceLevel();
@@ -96,18 +98,14 @@ const Auth = () => {
         }
       } else if (mode === 'forgot-password') {
         const { error } = await resetPassword(email);
-        if (error) {
-          toast({
-            variant: 'destructive',
-            title: 'Reset failed',
-            description: error.message,
-          });
-        } else {
-          toast({
-            title: 'Check your email',
-            description: 'We sent you a password reset link.',
-          });
-          setMode('login');
+        // Always show success message to prevent email enumeration
+        toast({
+          title: 'Check your email',
+          description: 'If the email exists, we sent you a verification code.',
+        });
+        if (!error) {
+          setForgotPasswordEmail(email);
+          setMode('verify-otp');
         }
       }
     } finally {
@@ -125,6 +123,21 @@ const Auth = () => {
     const { signOut } = await import('@/hooks/useAuth').then(m => ({ signOut: m.useAuth }));
     setMfaState(null);
     setMode('login');
+  };
+
+  const handleOTPSuccess = () => {
+    toast({
+      title: 'Success!',
+      description: 'Your password has been reset. Please sign in.',
+    });
+    setMode('login');
+    setEmail(forgotPasswordEmail);
+    setForgotPasswordEmail('');
+  };
+
+  const handleOTPBack = () => {
+    setMode('forgot-password');
+    setEmail(forgotPasswordEmail);
   };
 
   if (loading) {
@@ -148,6 +161,19 @@ const Auth = () => {
     );
   }
 
+  // Show OTP verification screen for password reset
+  if (mode === 'verify-otp') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle p-4">
+        <OTPVerification
+          email={forgotPasswordEmail}
+          onSuccess={handleOTPSuccess}
+          onBack={handleOTPBack}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-subtle p-4">
       <Card className="w-full max-w-md animate-slide-up">
@@ -165,7 +191,7 @@ const Auth = () => {
           <CardDescription>
             {mode === 'login' && 'Sign in to your AI App Builder account'}
             {mode === 'register' && 'Start building AI applications today'}
-            {mode === 'forgot-password' && 'Enter your email to receive a reset link'}
+            {mode === 'forgot-password' && 'Enter your email to receive a verification code'}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -211,7 +237,7 @@ const Auth = () => {
               {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {mode === 'login' && 'Sign In'}
               {mode === 'register' && 'Create Account'}
-              {mode === 'forgot-password' && 'Send Reset Link'}
+              {mode === 'forgot-password' && 'Send Code'}
             </Button>
           </form>
 

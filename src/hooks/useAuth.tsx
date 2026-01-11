@@ -10,6 +10,8 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: Error | null }>;
+  verifyOtp: (email: string, token: string) => Promise<{ error: Error | null }>;
+  updatePassword: (newPassword: string) => Promise<{ error: Error | null }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -88,14 +90,60 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const resetPassword = async (email: string) => {
+    console.log('[Auth] resetPassword attempt:', { email });
+    
+    // This sends an OTP email for password recovery
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
+      redirectTo: `${window.location.origin}/auth?mode=reset-password`,
     });
+    
+    console.log('[Auth] resetPassword response:', { error: error?.message });
+    
+    return { error: error as Error | null };
+  };
+
+  const verifyOtp = async (email: string, token: string) => {
+    console.log('[Auth] verifyOtp attempt:', { email, tokenLength: token.length });
+    
+    const { data, error } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'recovery',
+    });
+    
+    console.log('[Auth] verifyOtp response:', { 
+      userId: data?.user?.id, 
+      session: !!data?.session,
+      error: error?.message 
+    });
+    
+    return { error: error as Error | null };
+  };
+
+  const updatePassword = async (newPassword: string) => {
+    console.log('[Auth] updatePassword attempt');
+    
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    
+    console.log('[Auth] updatePassword response:', { error: error?.message });
+    
     return { error: error as Error | null };
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signUp, signIn, signOut, resetPassword }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      session, 
+      loading, 
+      signUp, 
+      signIn, 
+      signOut, 
+      resetPassword, 
+      verifyOtp, 
+      updatePassword 
+    }}>
       {children}
     </AuthContext.Provider>
   );
