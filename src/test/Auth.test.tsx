@@ -5,7 +5,6 @@ import Auth from '@/pages/Auth';
 import { AuthProvider } from '@/hooks/useAuth';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-// Mock Supabase client
 vi.mock('@/integrations/supabase/client', () => ({
   supabase: {
     auth: {
@@ -16,6 +15,8 @@ vi.mock('@/integrations/supabase/client', () => ({
       signInWithPassword: vi.fn(),
       signUp: vi.fn(),
       resetPasswordForEmail: vi.fn(),
+      verifyOtp: vi.fn(),
+      updateUser: vi.fn(),
       mfa: {
         getAuthenticatorAssuranceLevel: vi.fn().mockResolvedValue({
           data: { currentLevel: null, nextLevel: null, currentAuthenticationMethods: [] },
@@ -73,5 +74,15 @@ describe('Auth Page', () => {
   it('password input has correct type', () => {
     const { getByLabelText } = renderAuth();
     expect(getByLabelText('Password')).toHaveAttribute('type', 'password');
+  });
+
+  it('has forgot password link', () => {
+    const { getByText } = renderAuth();
+    expect(getByText('Forgot password?')).toBeInTheDocument();
+  });
+
+  it('has sign up link', () => {
+    const { getByText } = renderAuth();
+    expect(getByText('Sign up')).toBeInTheDocument();
   });
 });
