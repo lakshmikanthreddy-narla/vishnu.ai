@@ -127,12 +127,10 @@ const Auth = () => {
 
   const handleOTPSuccess = () => {
     toast({
-      title: 'Success!',
-      description: 'Your password has been reset. Please sign in.',
+      title: 'Welcome back!',
+      description: 'Your password has been reset and you are now logged in.',
     });
-    setMode('login');
-    setEmail(forgotPasswordEmail);
-    setForgotPasswordEmail('');
+    navigate('/dashboard');
   };
 
   const handleOTPBack = () => {
