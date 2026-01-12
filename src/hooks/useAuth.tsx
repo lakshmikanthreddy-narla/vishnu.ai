@@ -92,9 +92,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const resetPassword = async (email: string) => {
     console.log('[Auth] resetPassword attempt:', { email });
     
-    // This sends an OTP email for password recovery
+    // Get the appropriate redirect URL
+    const baseUrl = window.location.origin.includes('localhost') 
+      ? window.location.origin 
+      : 'https://craftlytics-ai.lovable.app';
+    
+    const redirectTo = `${baseUrl}/auth/reset-password`;
+    console.log('[Auth] resetPassword redirectTo:', redirectTo);
+    
+    // This sends a password recovery email with a link
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth?mode=reset-password`,
+      redirectTo,
     });
     
     console.log('[Auth] resetPassword response:', { error: error?.message });
