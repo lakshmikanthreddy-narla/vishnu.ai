@@ -223,6 +223,11 @@ export type Database = {
           email: string
           full_name: string | null
           id: string
+          pin_attempts: number
+          pin_locked_until: string | null
+          two_step_enabled: boolean
+          two_step_pin_hash: string | null
+          two_step_recovery_email: string | null
           updated_at: string
           user_id: string
         }
@@ -232,6 +237,11 @@ export type Database = {
           email: string
           full_name?: string | null
           id?: string
+          pin_attempts?: number
+          pin_locked_until?: string | null
+          two_step_enabled?: boolean
+          two_step_pin_hash?: string | null
+          two_step_recovery_email?: string | null
           updated_at?: string
           user_id: string
         }
@@ -241,6 +251,11 @@ export type Database = {
           email?: string
           full_name?: string | null
           id?: string
+          pin_attempts?: number
+          pin_locked_until?: string | null
+          two_step_enabled?: boolean
+          two_step_pin_hash?: string | null
+          two_step_recovery_email?: string | null
           updated_at?: string
           user_id?: string
         }
