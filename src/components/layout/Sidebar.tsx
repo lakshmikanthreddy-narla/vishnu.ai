@@ -12,6 +12,10 @@ const navigation = [{
   name: 'New App',
   href: '/apps/new',
   icon: Plus
+}, {
+  name: 'Settings',
+  href: '/settings/security',
+  icon: Settings
 }];
 export const Sidebar = () => {
   const location = useLocation();

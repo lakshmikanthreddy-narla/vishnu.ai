@@ -7,7 +7,8 @@ import {
   Plus,
   Menu,
   LogOut,
-  Sparkles
+  Sparkles,
+  Settings
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +23,7 @@ import { useState } from 'react';
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'New App', href: '/apps/new', icon: Plus },
+  { name: 'Settings', href: '/settings/security', icon: Settings },
 ];
 
 export const MobileNav = () => {
