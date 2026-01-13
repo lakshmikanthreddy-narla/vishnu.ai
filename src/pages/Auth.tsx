@@ -1,23 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import { useMFA } from '@/hooks/useMFA';
+import { useTwoStepPin } from '@/hooks/useTwoStepPin';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Bot, Loader2, ArrowLeft } from 'lucide-react';
-import { MFAVerification } from '@/components/auth/MFAVerification';
-import { OTPVerification } from '@/components/auth/OTPVerification';
+import { TwoStepVerification } from '@/components/auth/TwoStepVerification';
 
-type AuthMode = 'login' | 'register' | 'forgot-password' | 'verify-otp' | 'mfa-verify';
+type AuthMode = 'login' | 'register' | 'forgot-password' | 'two-step-verify';
 
-interface MFAState {
-  factorId: string;
-}
-
-const Auth = () => {
+export const Auth = () => {
   const [searchParams] = useSearchParams();
   const initialMode = (searchParams.get('mode') as AuthMode) || 'login';
   const [mode, setMode] = useState<AuthMode>(initialMode);
@@ -25,38 +20,31 @@ const Auth = () => {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [mfaState, setMfaState] = useState<MFAState | null>(null);
-  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
+  const [pendingTwoStep, setPendingTwoStep] = useState(false);
 
-  const { signIn, signUp, resetPassword, user, loading } = useAuth();
-  const { getAuthenticatorAssuranceLevel, getMFAFactors } = useMFA();
+  const { signIn, signUp, resetPassword, user, loading, signOut } = useAuth();
+  const { getStatus } = useTwoStepPin();
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
-    if (!loading && user && mode !== 'mfa-verify' && mode !== 'verify-otp') {
-      // Check if user needs to complete MFA
-      const checkMFAStatus = async () => {
-        const { currentLevel, nextLevel } = await getAuthenticatorAssuranceLevel();
+    if (!loading && user && mode !== 'two-step-verify') {
+      // Check if user has two-step verification enabled
+      const checkTwoStepStatus = async () => {
+        const status = await getStatus();
         
-        if (currentLevel === 'aal1' && nextLevel === 'aal2') {
-          // User has MFA enabled but hasn't completed it
-          const factors = await getMFAFactors();
-          const verifiedFactor = factors.find(f => f.status === 'verified');
-          
-          if (verifiedFactor) {
-            setMfaState({ factorId: verifiedFactor.id });
-            setMode('mfa-verify');
-            return;
-          }
+        if (status.enabled && pendingTwoStep) {
+          // User has two-step enabled and just logged in, show PIN screen
+          setMode('two-step-verify');
+        } else if (!status.enabled || !pendingTwoStep) {
+          // No two-step or already verified, go to dashboard
+          navigate('/dashboard');
         }
-        
-        navigate('/dashboard');
       };
       
-      checkMFAStatus();
+      checkTwoStepStatus();
     }
-  }, [user, loading, navigate, mode]);
+  }, [user, loading, navigate, mode, pendingTwoStep]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,8 +59,10 @@ const Auth = () => {
             title: 'Sign in failed',
             description: error.message,
           });
+        } else {
+          // Mark that we need to check two-step after login
+          setPendingTwoStep(true);
         }
-        // Navigation handled by useEffect after checking MFA
       } else if (mode === 'register') {
         const { error } = await signUp(email, password, fullName);
         if (error) {
@@ -101,11 +91,10 @@ const Auth = () => {
         // Always show success message to prevent email enumeration
         toast({
           title: 'Check your email',
-          description: 'If the email exists, we sent you a verification code.',
+          description: 'If the email exists, we sent you a password reset link.',
         });
         if (!error) {
-          setForgotPasswordEmail(email);
-          setMode('verify-otp');
+          setMode('login');
         }
       }
     } finally {
@@ -113,29 +102,24 @@ const Auth = () => {
     }
   };
 
-  const handleMFASuccess = () => {
-    setMfaState(null);
-    navigate('/dashboard');
-  };
-
-  const handleMFACancel = async () => {
-    // Sign out the user if they cancel MFA
-    const { signOut } = await import('@/hooks/useAuth').then(m => ({ signOut: m.useAuth }));
-    setMfaState(null);
-    setMode('login');
-  };
-
-  const handleOTPSuccess = () => {
+  const handleTwoStepSuccess = () => {
+    setPendingTwoStep(false);
     toast({
       title: 'Welcome back!',
-      description: 'Your password has been reset and you are now logged in.',
+      description: 'Successfully signed in.',
     });
     navigate('/dashboard');
   };
 
-  const handleOTPBack = () => {
-    setMode('forgot-password');
-    setEmail(forgotPasswordEmail);
+  const handleTwoStepCancel = async () => {
+    // Sign out the user if they cancel two-step verification
+    await signOut();
+    setPendingTwoStep(false);
+    setMode('login');
+    toast({
+      title: 'Sign in cancelled',
+      description: 'You must complete two-step verification to sign in.',
+    });
   };
 
   if (loading) {
@@ -146,27 +130,13 @@ const Auth = () => {
     );
   }
 
-  // Show MFA verification screen
-  if (mode === 'mfa-verify' && mfaState) {
+  // Show Two-Step PIN verification screen
+  if (mode === 'two-step-verify') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-subtle p-4">
-        <MFAVerification
-          factorId={mfaState.factorId}
-          onSuccess={handleMFASuccess}
-          onCancel={handleMFACancel}
-        />
-      </div>
-    );
-  }
-
-  // Show OTP verification screen for password reset
-  if (mode === 'verify-otp') {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle p-4">
-        <OTPVerification
-          email={forgotPasswordEmail}
-          onSuccess={handleOTPSuccess}
-          onBack={handleOTPBack}
+        <TwoStepVerification
+          onSuccess={handleTwoStepSuccess}
+          onCancel={handleTwoStepCancel}
         />
       </div>
     );
@@ -189,7 +159,7 @@ const Auth = () => {
           <CardDescription>
             {mode === 'login' && 'Sign in to your AI App Builder account'}
             {mode === 'register' && 'Start building AI applications today'}
-            {mode === 'forgot-password' && 'Enter your email to receive a verification code'}
+            {mode === 'forgot-password' && 'Enter your email to receive a password reset link'}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -235,7 +205,7 @@ const Auth = () => {
               {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {mode === 'login' && 'Sign In'}
               {mode === 'register' && 'Create Account'}
-              {mode === 'forgot-password' && 'Send Code'}
+              {mode === 'forgot-password' && 'Send Reset Link'}
             </Button>
           </form>
 

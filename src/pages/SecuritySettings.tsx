@@ -1,8 +1,8 @@
-import { MFASettings } from '@/components/auth/MFASettings';
+import { TwoStepSettings } from '@/components/auth/TwoStepSettings';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { User, Shield } from 'lucide-react';
+import { User } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 
 const SecuritySettings = () => {
@@ -41,8 +41,8 @@ const SecuritySettings = () => {
           </CardContent>
         </Card>
 
-        {/* 2FA Settings */}
-        <MFASettings />
+        {/* Two-Step Verification Settings (WhatsApp-style PIN) */}
+        <TwoStepSettings />
       </div>
     </DashboardLayout>
   );
