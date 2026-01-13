@@ -31,20 +31,27 @@ export const Auth = () => {
     if (!loading && user && mode !== 'two-step-verify') {
       // Check if user has two-step verification enabled
       const checkTwoStepStatus = async () => {
-        const status = await getStatus();
-        
-        if (status.enabled && pendingTwoStep) {
-          // User has two-step enabled and just logged in, show PIN screen
-          setMode('two-step-verify');
-        } else if (!status.enabled || !pendingTwoStep) {
-          // No two-step or already verified, go to dashboard
+        try {
+          const status = await getStatus();
+          console.log('[Auth] Two-step status check:', { enabled: status.enabled, pendingTwoStep });
+          
+          if (status.enabled) {
+            // User has two-step enabled, show PIN screen
+            setMode('two-step-verify');
+          } else {
+            // No two-step enabled, go directly to dashboard
+            navigate('/dashboard');
+          }
+        } catch (error) {
+          console.error('[Auth] Failed to check two-step status:', error);
+          // On error, still allow access to dashboard
           navigate('/dashboard');
         }
       };
       
       checkTwoStepStatus();
     }
-  }, [user, loading, navigate, mode, pendingTwoStep]);
+  }, [user, loading, navigate, mode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
